@@ -1,0 +1,11 @@
+name = "you-draw-ai-guesses"
+compatibility_date = "2023-08-01"
+
+[pages]
+pages_build_output_dir = "."
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[env.preview]
+vars = { ENVIRONMENT = "preview" }
