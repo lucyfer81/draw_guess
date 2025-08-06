@@ -21,13 +21,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // 获取新游戏
   async function newGame() {
     resultEl.innerHTML = '';
-    wordsEl.innerHTML = '<div class="loading"><div class="spinner"></div>Loading new game...</div>';
+    wordsEl.innerHTML = '<div class="loading"><div class="spinner"></div>正在加载新游戏...</div>';
     
     try {
       const response = await fetch('/api/new-game');
       const data = await response.json();
       
-      categoryEl.textContent = `Category: ${capitalize(data.category)}`;
+      categoryEl.textContent = `类别: ${getCategoryName(data.category)}`;
       wordsEl.innerHTML = data.words.map(word => 
         `<span class="word" data-word="${word}">${word}</span>`
       ).join(' ');
@@ -50,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
     } catch (error) {
-      wordsEl.innerHTML = `<p style="color: #dc3545">Error loading game: ${error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
+      wordsEl.innerHTML = `<p style="color: #dc3545">加载游戏错误: ${error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
     }
   }
   
@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resultEl.innerHTML = `
       <div class="loading">
         <div class="spinner"></div>
-        <p>AI is analyzing your drawing...</p>
+        <p>AI正在分析你的画作...</p>
       </div>
     `;
     
@@ -137,21 +137,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const emoji = isCorrect ? '🎉' : '😅';
       
       resultEl.innerHTML = `
-        <h3>${emoji} Result ${emoji}</h3>
-        <p>You drew: <strong>${selectedWord}</strong></p>
-        <p>AI guessed: <strong>${result.guess}</strong></p>
-        <p>Confidence: <strong>${(result.confidence * 100).toFixed(1)}%</strong></p>
+        <h3>${emoji} 结果 ${emoji}</h3>
+        <p>你画的是: <strong>${selectedWord}</strong></p>
+        <p>AI猜的是: <strong>${result.guess}</strong></p>
+        <p>置信度: <strong>${(result.confidence * 100).toFixed(1)}%</strong></p>
         <p style="font-weight: bold; color: ${isCorrect ? '#28a745' : '#dc3545'}">
-          ${isCorrect ? 'Correct!' : 'Not quite...'}
+          ${isCorrect ? '正确！' : '不太对...'}
         </p>
-        <button id="play-again">Play Again</button>
+        <button id="play-again">再玩一次</button>
       `;
       
       document.getElementById('play-again').addEventListener('click', newGame);
     } catch (error) {
       resultEl.innerHTML = `
-        <p style="color: #dc3545">Error: ${error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
-        <button id="try-again">Try Again</button>
+        <p style="color: #dc3545">错误: ${error.message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+        <button id="try-again">重试</button>
       `;
       document.getElementById('try-again').addEventListener('click', makeGuess);
     }
@@ -191,6 +191,20 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // 开始新游戏
   newGame();
+  
+  function getCategoryName(category) {
+    const categoryNames = {
+      'animals': '动物',
+      'food': '食物', 
+      'movies': '电影',
+      'countries': '国家',
+      'vehicles': '交通工具',
+      'famous-people': '名人',
+      'sports': '运动',
+      'musical-instruments': '乐器'
+    };
+    return categoryNames[category] || category;
+  }
   
   function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
