@@ -12,8 +12,22 @@
     <div id="words"></div>
     <canvas id="drawing-board" width="500" height="400"></canvas>
     <div class="controls">
-      <button id="clear">清除</button>
-      <button id="guess" disabled>猜我画的是什么</button>
+      <div class="tools">
+        <div class="tool-group">
+          <label for="brush-size">画笔大小:</label>
+          <input type="range" id="brush-size" min="1" max="20" value="3">
+        </div>
+        <div class="tool-group">
+          <label for="color-picker">颜色:</label>
+          <input type="color" id="color-picker" value="#000000">
+        </div>
+        <button id="eraser">橡皮擦</button>
+        <button id="hint">提示</button>
+      </div>
+      <div class="actions">
+        <button id="clear">清除</button>
+        <button id="guess">猜猜看</button>
+      </div>
     </div>
     <div id="result"></div>
   </div>

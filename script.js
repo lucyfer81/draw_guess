@@ -12,11 +12,47 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastY = 0;
   let selectedWord = null;
   
-  // 设置画布
+  // 设置画布和工具
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.lineWidth = 3;
   ctx.strokeStyle = '#000000';
+  
+  // 工具控制
+  const toolPanel = document.getElementById('tools');
+  const brushSize = document.getElementById('brush-size');
+  const colorPicker = document.getElementById('color-picker');
+  const eraserBtn = document.getElementById('eraser');
+  const hintBtn = document.getElementById('hint');
+  
+  // 更新画笔大小
+  brushSize.addEventListener('input', () => {
+    ctx.lineWidth = brushSize.value;
+  });
+  
+  // 更新颜色
+  colorPicker.addEventListener('input', () => {
+    ctx.strokeStyle = colorPicker.value;
+    eraserBtn.classList.remove('active');
+  });
+  
+  // 橡皮擦
+  eraserBtn.addEventListener('click', () => {
+    ctx.strokeStyle = '#ffffff';
+    eraserBtn.classList.add('active');
+  });
+  
+  // 提示
+  hintBtn.addEventListener('click', () => {
+    if (!selectedWord) return;
+    resultEl.innerHTML = `
+      <div class="hint">
+        <p>提示: ${selectedWord}</p>
+        <img src="/api/hint?word=${encodeURIComponent(selectedWord)}" 
+             alt="示例图片" style="max-width: 200px; max-height: 200px;">
+      </div>
+    `;
+  });
   
   // 获取新游戏
   async function newGame() {
@@ -75,6 +111,74 @@ document.addEventListener('DOMContentLoaded', () => {
     isDrawing = false;
   }
   
+  // 检测绘画质量
+  function checkDrawingQuality() {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let nonWhitePixels = 0;
+    let totalIntensity = 0;
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const intensity = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      if (intensity < 250) {
+        nonWhitePixels++;
+        totalIntensity += intensity;
+      }
+    }
+    
+    const coverage = nonWhitePixels / (canvas.width * canvas.height);
+    const avgIntensity = nonWhitePixels > 0 ? totalIntensity / nonWhitePixels : 255;
+    
+    return {
+      coverage: coverage,
+      isEmpty: coverage < 0.01,
+      isTooSparse: coverage < 0.05,
+      isTooDark: avgIntensity < 100,
+      quality: coverage > 0.05 && coverage < 0.8 && avgIntensity > 50 ? 'good' : 'poor'
+    };
+  }
+
+  // 增强图像预处理
+  function enhanceImageData(sourceCanvas) {
+    const enhancedCanvas = document.createElement('canvas');
+    enhancedCanvas.width = 224;
+    enhancedCanvas.height = 224;
+    const enhancedCtx = enhancedCanvas.getContext('2d');
+    
+    enhancedCtx.fillStyle = "white";
+    enhancedCtx.fillRect(0, 0, 224, 224);
+    enhancedCtx.drawImage(sourceCanvas, 0, 0, 224, 224);
+    
+    const imageData = enhancedCtx.getImageData(0, 0, 224, 224);
+    const data = imageData.data;
+    
+    // 增强对比度和线条
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+      
+      let enhanced = gray;
+      if (gray < 128) {
+        enhanced = Math.max(0, gray - 50);
+      } else {
+        enhanced = Math.min(255, gray + 50);
+      }
+      
+      const threshold = 100;
+      if (Math.abs(gray - 255) < threshold) {
+        enhanced = 255;
+      } else {
+        enhanced = Math.max(0, enhanced - 30);
+      }
+      
+      data[i] = data[i + 1] = data[i + 2] = enhanced;
+      data[i + 3] = 255;
+    }
+    
+    enhancedCtx.putImageData(imageData, 0, 0);
+    return enhancedCanvas;
+  }
+
   // 清除画布
   function clearCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -90,28 +194,55 @@ document.addEventListener('DOMContentLoaded', () => {
   async function makeGuess() {
     if (!selectedWord) return;
     
+    // 检查绘画质量
+    const quality = checkDrawingQuality();
+    if (quality.isEmpty) {
+      resultEl.innerHTML = `
+        <div style="color: #ff9800; padding: 20px; border: 1px solid #ff9800; border-radius: 8px; margin: 10px 0;">
+          <h4>⚠️ 画布为空</h4>
+          <p>请先画点什么再让AI猜测！</p>
+        </div>
+      `;
+      return;
+    }
+    
+    if (quality.isTooSparse) {
+      resultEl.innerHTML = `
+        <div style="color: #ff9800; padding: 20px; border: 1px solid #ff9800; border-radius: 8px; margin: 10px 0;">
+          <h4>⚠️ 绘画太简单</h4>
+          <p>画面内容太少，AI可能无法准确识别。尝试添加更多细节！</p>
+          <button onclick="this.parentElement.parentElement.innerHTML=''" style="margin-top: 10px;">继续绘画</button>
+        </div>
+      `;
+      return;
+    }
+    
     // 显示加载状态
     resultEl.innerHTML = `
       <div class="loading">
         <div class="spinner"></div>
-        <p>AI正在分析你的画作...</p>
+        <p>AI正在分析你的画作 (质量: ${quality.quality === 'good' ? '良好' : '待改进'})...</p>
       </div>
     `;
     
-    // 将画布缩小到适合CLIP模型的尺寸
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = 224;
-    tempCanvas.height = 224;
-    const tempCtx = tempCanvas.getContext('2d');
-    // Add a white background to the temp canvas
-    tempCtx.fillStyle = "white";
-    tempCtx.fillRect(0, 0, 224, 224);
-    tempCtx.drawImage(canvas, 0, 0, 224, 224);
-    const imageData = tempCanvas.toDataURL('image/png');
+    // 高分辨率处理
+    const highResCanvas = document.createElement('canvas');
+    highResCanvas.width = 800;
+    highResCanvas.height = 800;
+    const highResCtx = highResCanvas.getContext('2d');
+    highResCtx.fillStyle = "white";
+    highResCtx.fillRect(0, 0, 800, 800);
+    highResCtx.imageSmoothingEnabled = false;
+    highResCtx.drawImage(canvas, 0, 0, 800, 800);
     
-    // 获取提示词
+    // 使用增强图像预处理
+    const enhancedCanvas = enhanceImageData(highResCanvas);
+    const imageData = enhancedCanvas.toDataURL('image/png', 1.0);
+    
+    // 获取所有提示词和选中词
     const words = Array.from(wordsEl.querySelectorAll('.word'))
       .map(el => el.textContent);
+    const selectedWords = selectedWord ? [selectedWord] : [];
     
     try {
       const response = await fetch('/api/guess', {
@@ -121,7 +252,12 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         body: JSON.stringify({
             image: imageData,
-            words: words
+            words: words,
+            selectedWords: selectedWords,
+            drawingSettings: {
+                lineWidth: ctx.lineWidth,
+                lineColor: ctx.strokeStyle
+            }
         })
       });
       

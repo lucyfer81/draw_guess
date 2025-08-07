@@ -30,7 +30,6 @@ export async function onRequest(context) {
 
 async function handleRealGuess(request, env) {
     try {
-        // 使用 tee() 方法来避免重复读取请求体
         const clonedRequest = request.clone();
         const { image, words } = await clonedRequest.json();
 
@@ -43,7 +42,6 @@ async function handleRealGuess(request, env) {
         
         // 检查是否有 AI_TOKEN
         if (!env.AI_TOKEN) {
-            // 如果没有 AI_TOKEN，使用模拟响应
             return handleGuessMock(request, env);
         }
         
@@ -52,43 +50,218 @@ async function handleRealGuess(request, env) {
         const imageBlob = await imageResponse.blob();
         const imageBytes = [...new Uint8Array(await imageBlob.arrayBuffer())];
         
-        // 使用 Cloudflare Workers AI REST API
         const accountId = env.ACCOUNT_ID;
-        const aiResponse = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/microsoft/resnet-50`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${env.AI_TOKEN}`
-            },
-            body: JSON.stringify({
-                image: imageBytes,
-                labels: words
-            })
+        
+        // 使用更适合简笔画识别的模型组合
+        const [imageClassification, objectDetection, clipModel] = await Promise.all([
+            // 1. 改进的图像分类模型 - 更适合简笔画识别
+            fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/microsoft/resnet-50`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${env.AI_TOKEN}`
+                },
+                body: JSON.stringify({
+                    image: imageBytes
+                })
+            }).catch(() => null),
+            // 2. 物体检测模型 - 提供更详细的识别
+            fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/facebook/detr-resnet-50`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${env.AI_TOKEN}`
+                },
+                body: JSON.stringify({
+                    image: imageBytes
+                })
+            }).catch(() => null),
+            // 3. CLIP模型 - 用于文本-图像匹配（如果可用）
+            fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/clip`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${env.AI_TOKEN}`
+                },
+                body: JSON.stringify({
+                    image: imageBytes,
+                    text: words
+                })
+            }).catch(() => null)
+        ]);
+
+        // 获取所有模型的识别结果
+        const results = await Promise.all([
+            imageClassification ? imageClassification.json() : Promise.resolve(null),
+            objectDetection ? objectDetection.json() : Promise.resolve(null),
+            clipModel ? clipModel.json() : Promise.resolve(null)
+        ]);
+        
+        const [classificationResult, detectionResult, clipResult] = results;
+
+        // 提取所有可能的识别结果
+        const allPredictions = [];
+        
+        // 从分类结果中提取
+        if (classificationResult.result && Array.isArray(classificationResult.result)) {
+            classificationResult.result.forEach(item => {
+                if (item.label) {
+                    allPredictions.push({
+                        label: item.label.toLowerCase(),
+                        confidence: item.score || item.confidence || 0.5,
+                        source: 'classification'
+                    });
+                }
+            });
+        }
+
+        // 中英文词汇映射表
+        const chineseToEnglish = {
+            '猫': 'cat', '狗': 'dog', '鸟': 'bird', '鱼': 'fish', '大象': 'elephant',
+            '狮子': 'lion', '老虎': 'tiger', '熊': 'bear', '蛇': 'snake', '兔子': 'rabbit',
+            '猴子': 'monkey', '长颈鹿': 'giraffe', '苹果': 'apple', '香蕉': 'banana',
+            '披萨': 'pizza', '汉堡': 'hamburger', '寿司': 'sushi', '冰淇淋': 'ice cream',
+            '蛋糕': 'cake', '意大利面': 'pasta', '巧克力': 'chocolate', '咖啡': 'coffee',
+            '汽车': 'car', '公交车': 'bus', '自行车': 'bicycle', '飞机': 'airplane',
+            '船': 'boat', '火车': 'train', '摩托车': 'motorcycle', '直升机': 'helicopter',
+            '卡车': 'truck', '吉他': 'guitar', '钢琴': 'piano', '小提琴': 'violin',
+            '鼓': 'drum', '长笛': 'flute', '小号': 'trumpet', '萨克斯': 'saxophone',
+            '足球': 'soccer ball', '篮球': 'basketball', '网球': 'tennis ball',
+            '高尔夫': 'golf', '游泳': 'swimming', '拳击': 'boxing', '排球': 'volleyball',
+            '美国': 'america', '中国': 'china', '日本': 'japan', '法国': 'france',
+            '巴西': 'brazil', '澳大利亚': 'australia', '加拿大': 'canada', '墨西哥': 'mexico',
+            '意大利': 'italy', '德国': 'germany', '泰坦尼克号': 'titanic', '盗梦空间': 'inception',
+            '阿凡达': 'avatar', '黑客帝国': 'matrix', '星球大战': 'star wars', '教父': 'godfather',
+            '侏罗纪公园': 'jurassic park', '狮子王': 'lion king', '爱因斯坦': 'einstein',
+            '玛丽莲·梦露': 'marilyn monroe', '猫王': 'elvis presley', '莎士比亚': 'shakespeare',
+            '曼德拉': 'mandela', '迈克尔·杰克逊': 'michael jackson', '麦当娜': 'madonna'
+        };
+
+        // 从检测结果中提取
+        if (detectionResult && detectionResult.result && Array.isArray(detectionResult.result)) {
+            detectionResult.result.forEach(item => {
+                if (item.label) {
+                    allPredictions.push({
+                        label: item.label.toLowerCase(),
+                        confidence: item.confidence || item.score || 0.5,
+                        source: 'detection'
+                    });
+                }
+            });
+        }
+
+        // 从CLIP结果中提取
+        if (clipResult && clipResult.result && Array.isArray(clipResult.result)) {
+            clipResult.result.forEach((item, index) => {
+                if (words[index]) {
+                    allPredictions.push({
+                        label: words[index].toLowerCase(),
+                        confidence: item.score || 0.7,
+                        source: 'clip'
+                    });
+                }
+            });
+        }
+
+        // 如果所有模型都没有返回结果，使用模拟分类
+        if (allPredictions.length === 0) {
+            return handleGuessMock(request, env);
+        }
+
+        // 计算每个候选单词的匹配得分 - 使用改进的中文匹配算法
+        const wordScores = words.map(candidateWord => {
+            const candidate = candidateWord.toLowerCase();
+            const candidateEn = chineseToEnglish[candidate] || candidate;
+            let maxScore = 0;
+            let bestMatch = '';
+            
+            allPredictions.forEach(prediction => {
+                const label = prediction.label.toLowerCase();
+                let similarity = 0;
+                
+                // 直接中文匹配
+                if (label === candidate) {
+                    similarity = 1.0;
+                    bestMatch = label;
+                }
+                // 英文映射匹配
+                else if (candidateEn && label.includes(candidateEn)) {
+                    similarity = 0.9;
+                    bestMatch = label;
+                }
+                else if (candidateEn && candidateEn.includes(label)) {
+                    similarity = 0.85;
+                    bestMatch = label;
+                }
+                // 语义相似度匹配
+                else {
+                    // 计算词级别的相似度
+                    const labelWords = label.split(/[\s-_]+/);
+                    const candidateWords = candidateEn.split(/[\s-_]+/);
+                    
+                    let wordMatches = 0;
+                    candidateWords.forEach(cw => {
+                        labelWords.forEach(lw => {
+                            if (cw.length > 2 && lw.length > 2) {
+                                if (cw === lw) wordMatches += 1.0;
+                                else if (cw.includes(lw) || lw.includes(cw)) wordMatches += 0.7;
+                            }
+                        });
+                    });
+                    
+                    similarity = wordMatches / Math.max(candidateWords.length, labelWords.length);
+                    if (similarity > 0) bestMatch = label;
+                }
+                
+                // 增强的置信度计算
+                let modelWeight = 1.0;
+                switch(prediction.source) {
+                    case 'clip': modelWeight = 1.5; break;
+                    case 'classification': modelWeight = 1.2; break;
+                    case 'detection': modelWeight = 1.0; break;
+                }
+                
+                const score = similarity * prediction.confidence * modelWeight;
+                
+                if (score > maxScore) {
+                    maxScore = score;
+                }
+            });
+            
+            return {
+                word: candidateWord,
+                score: Math.min(maxScore, 0.95),
+                confidence: Math.min(maxScore, 0.95),
+                bestMatch: bestMatch
+            };
         });
+
+        // 按得分排序
+        wordScores.sort((a, b) => b.score - a.score);
         
-        if (!aiResponse.ok) {
-            throw new Error('AI API 调用失败');
-        }
-        
-        const aiResult = await aiResponse.json();
-        
-        if (!aiResult.success || !aiResult.result || aiResult.result.length === 0) {
-            throw new Error('AI模型未返回有效结果');
-        }
-        
-        // 获取最佳匹配结果
-        const bestGuess = aiResult.result[0];
-        
+        const bestGuess = wordScores[0].word;
+        const confidence = Math.min(wordScores[0].confidence, 0.95);
+
+        // 添加调试信息
+        const debugInfo = {
+            allPredictions: allPredictions.slice(0, 5), // 只返回前5个预测
+            wordScores: wordScores.slice(0, 3),
+            modelResults: {
+                classification: classificationResult.result ? 'success' : 'failed',
+                detection: detectionResult.result ? 'success' : 'failed'
+            }
+        };
+
         return new Response(JSON.stringify({ 
-            guess: bestGuess.label, 
-            confidence: bestGuess.score 
+            guess: bestGuess,
+            confidence: confidence,
+            debug: debugInfo
         }), {
             headers: { 'Content-Type': 'application/json' },
         });
         
     } catch (error) {
         console.error('AI API Error:', error);
-        // 如果 AI 调用失败，回退到模拟响应
         return handleGuessMock(request, env);
     }
 }
@@ -132,21 +305,117 @@ async function handleGuessMock(request, env) {
             return Response.json({ error: '无效的请求内容' }, { status: 400 });
         }
         
-        // 模拟 AI 响应 - 随机选择一个单词
-        const randomIndex = Math.floor(Math.random() * words.length);
-        const guess = words[randomIndex];
-        const confidence = 0.7 + Math.random() * 0.3; // 0.7-1.0
+        // 中英文词汇映射表（模拟版本）
+        const chineseToEnglish = {
+            '猫': 'cat', '狗': 'dog', '鸟': 'bird', '鱼': 'fish', '大象': 'elephant',
+            '狮子': 'lion', '老虎': 'tiger', '熊': 'bear', '蛇': 'snake', '兔子': 'rabbit',
+            '猴子': 'monkey', '长颈鹿': 'giraffe', '苹果': 'apple', '香蕉': 'banana',
+            '披萨': 'pizza', '汉堡': 'hamburger', '寿司': 'sushi', '冰淇淋': 'ice cream',
+            '蛋糕': 'cake', '意大利面': 'pasta', '巧克力': 'chocolate', '咖啡': 'coffee',
+            '汽车': 'car', '公交车': 'bus', '自行车': 'bicycle', '飞机': 'airplane',
+            '船': 'boat', '火车': 'train', '摩托车': 'motorcycle', '直升机': 'helicopter',
+            '卡车': 'truck', '吉他': 'guitar', '钢琴': 'piano', '小提琴': 'violin',
+            '鼓': 'drum', '长笛': 'flute', '小号': 'trumpet', '萨克斯': 'saxophone',
+            '足球': 'soccer ball', '篮球': 'basketball', '网球': 'tennis ball',
+            '高尔夫': 'golf', '游泳': 'swimming', '拳击': 'boxing', '排球': 'volleyball',
+            '美国': 'america', '中国': 'china', '日本': 'japan', '法国': 'france',
+            '巴西': 'brazil', '澳大利亚': 'australia', '加拿大': 'canada', '墨西哥': 'mexico',
+            '意大利': 'italy', '德国': 'germany', '泰坦尼克号': 'titanic', '盗梦空间': 'inception',
+            '阿凡达': 'avatar', '黑客帝国': 'matrix', '星球大战': 'star wars', '教父': 'godfather',
+            '侏罗纪公园': 'jurassic park', '狮子王': 'lion king', '爱因斯坦': 'einstein',
+            '玛丽莲·梦露': 'marilyn monroe', '猫王': 'elvis presley', '莎士比亚': 'shakespeare',
+            '曼德拉': 'mandela', '迈克尔·杰克逊': 'michael jackson', '麦当娜': 'madonna'
+        };
+
+        // 改进的模拟 AI 响应 - 基于更智能的匹配逻辑
+        const mockPredictions = [
+            'cat', 'dog', 'bird', 'fish', 'elephant', 'lion', 'tiger', 'bear', 'giraffe', 'rabbit',
+            'monkey', 'snake', 'apple', 'banana', 'pizza', 'hamburger', 'sushi', 'cake', 'pasta',
+            'ice cream', 'car', 'bus', 'bicycle', 'airplane', 'boat', 'train', 'motorcycle',
+            'guitar', 'piano', 'violin', 'drum', 'soccer ball', 'basketball', 'tennis ball',
+            'america', 'china', 'japan', 'france', 'titanic', 'avatar', 'star wars', 'einstein'
+        ];
+        
+        // 计算每个单词的匹配得分 - 使用改进的中文匹配算法
+        const wordScores = words.map(word => {
+            const candidate = word.toLowerCase();
+            const candidateEn = chineseToEnglish[candidate] || candidate;
+            let maxScore = 0;
+            let bestMatch = '';
+            
+            mockPredictions.forEach(prediction => {
+                const label = prediction.toLowerCase();
+                let similarity = 0;
+                
+                // 直接中文匹配
+                if (label === candidate) {
+                    similarity = 1.0;
+                    bestMatch = label;
+                }
+                // 英文映射匹配
+                else if (candidateEn && label.includes(candidateEn)) {
+                    similarity = 0.9;
+                    bestMatch = label;
+                }
+                else if (candidateEn && candidateEn.includes(label)) {
+                    similarity = 0.85;
+                    bestMatch = label;
+                }
+                // 语义相似度匹配
+                else {
+                    const labelWords = label.split(/[\s-_]+/);
+                    const candidateWords = candidateEn.split(/[\s-_]+/);
+                    
+                    let wordMatches = 0;
+                    candidateWords.forEach(cw => {
+                        labelWords.forEach(lw => {
+                            if (cw.length > 2 && lw.length > 2) {
+                                if (cw === lw) wordMatches += 1.0;
+                                else if (cw.includes(lw) || lw.includes(cw)) wordMatches += 0.7;
+                            }
+                        });
+                    });
+                    
+                    similarity = wordMatches / Math.max(candidateWords.length, labelWords.length);
+                    if (similarity > 0) bestMatch = label;
+                }
+                
+                maxScore = Math.max(maxScore, similarity);
+            });
+            
+            // 添加智能随机性，基于匹配质量
+            const baseScore = maxScore * 0.85;
+            const randomFactor = (Math.random() * 0.15) * (1 - maxScore); // 匹配越差，随机性越大
+            const confidence = Math.min(baseScore + randomFactor, 0.95);
+            
+            return {
+                word,
+                score: confidence,
+                confidence,
+                bestMatch
+            };
+        });
+        
+        // 按得分排序
+        wordScores.sort((a, b) => b.score - a.score);
+        
+        const bestGuess = wordScores[0].word;
+        const confidence = wordScores[0].confidence;
         
         return Response.json({ 
-          guess, 
-          confidence,
-          allResults: words.map((word, i) => ({ word, score: i === randomIndex ? confidence : Math.random() * 0.5 }))
+            guess: bestGuess, 
+            confidence,
+            allResults: wordScores,
+            debug: {
+                type: 'mock_improved',
+                wordCount: words.length
+            }
         });
 
-      } catch (error) {
+    } catch (error) {
         console.error(error.stack);
         return Response.json({ error: error.message }, {
-          status: 500
+            status: 500
         });
-      }
+    }
 }
